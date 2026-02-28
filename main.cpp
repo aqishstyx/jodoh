@@ -123,16 +123,15 @@ fs::path downloadMp3(const std::string& url, const fs::path& tmpDir) {
         throw std::runtime_error("MP3 not found after download");
 
     // Step 2: apply Spotify-style V-curve EQ via ffmpeg
-    // Sub-bass +3dB, Bass +2dB, Low-mid -1dB, Mid -1dB, High-mid +2dB, Treble +3dB
     fs::path eqOut = tmpDir / ("eq_" + raw.filename().string());
     std::string eqCmd =
         "ffmpeg -y -i " + shellEscape(raw.string()) +
-        " -af \"equalizer=f=60:width_type=o:width=2:g=3,"
-               "equalizer=f=200:width_type=o:width=2:g=2,"
-               "equalizer=f=500:width_type=o:width=2:g=-1,"
-               "equalizer=f=1000:width_type=o:width=2:g=-1,"
-               "equalizer=f=4000:width_type=o:width=2:g=2,"
-               "equalizer=f=12000:width_type=o:width=2:g=3\" "
+        " -af equalizer=f=60:width_type=o:width=2:g=3,"
+              "equalizer=f=200:width_type=o:width=2:g=2,"
+              "equalizer=f=500:width_type=o:width=2:g=-1,"
+              "equalizer=f=1000:width_type=o:width=2:g=-1,"
+              "equalizer=f=4000:width_type=o:width=2:g=2,"
+              "equalizer=f=12000:width_type=o:width=2:g=3 "
         + shellEscape(eqOut.string()) + " 2>&1";
 
     runCommand(eqCmd);
@@ -199,7 +198,7 @@ int main() {
     // /start
     bot.getEvents().onCommand("start", [&](TgBot::Message::Ptr msg) {
         sendMsg(bot.getApi(), msg->chat->id,
-            "🎵 *JukeBox Bot* — Search a track to play");
+            "🎵 *JukeBox* — Search a track to play");
     });
 
     // /help
