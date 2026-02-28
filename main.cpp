@@ -69,10 +69,11 @@ struct VideoInfo {
 };
 
 std::vector<VideoInfo> searchYouTube(const std::string& query) {
+    // ytmsearch = YouTube Music search — returns proper music tracks only
     std::string cmd =
         "yt-dlp --quiet --skip-download --flat-playlist "
         "--dump-json "
-        "--default-search ytsearch" + std::to_string(MAX_RESULTS) + " "
+        "--default-search ytmsearch" + std::to_string(MAX_RESULTS) + " "
         + shellEscape(query) + " 2>/dev/null";
 
     std::string raw;
@@ -84,8 +85,26 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
     while (std::getline(stream, line)) {
         if (line.empty()) continue;
         try {
-            auto j   = json::parse(line);
-            int  dur = j.value("duration", 0);
+            auto j = json::parse(line);
+
+            // YouTube Music may wrap results in entries array
+            if (j.contains("entries") && j["entries"].is_array()) {
+                for (auto& e : j["entries"]) {
+                    int dur = e.value("duration", 0);
+                    if (dur > MAX_DURATION_SEC) continue;
+                    VideoInfo v;
+                    v.id          = e.value("id", "");
+                    v.title       = e.value("title", "Unknown");
+                    v.duration    = dur;
+                    v.durationFmt = fmtDuration(dur);
+                    v.url         = "https://www.youtube.com/watch?v=" + v.id;
+                    if (!v.id.empty()) results.push_back(v);
+                }
+                continue;
+            }
+
+            // flat single entry
+            int dur = j.value("duration", 0);
             if (dur > MAX_DURATION_SEC) continue;
             VideoInfo v;
             v.id          = j.value("id", "");
@@ -94,6 +113,7 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
             v.durationFmt = fmtDuration(dur);
             v.url         = "https://www.youtube.com/watch?v=" + v.id;
             if (!v.id.empty()) results.push_back(v);
+
         } catch (...) { continue; }
     }
     return results;
@@ -102,6 +122,7 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
 // ─── Download ─────────────────────────────────────────────────────────────────
 
 fs::path downloadMp3(const std::string& url, const fs::path& tmpDir) {
+    // Step 1: download and convert to mp3
     std::string cmd =
         "yt-dlp --quiet "
         "--format bestaudio/best "
@@ -113,11 +134,31 @@ fs::path downloadMp3(const std::string& url, const fs::path& tmpDir) {
 
     runCommand(cmd);
 
+    fs::path raw;
     for (auto& entry : fs::directory_iterator(tmpDir))
         if (entry.path().extension() == ".mp3")
-            return entry.path();
+            { raw = entry.path(); break; }
 
-    throw std::runtime_error("MP3 not found after download");
+    if (raw.empty())
+        throw std::runtime_error("MP3 not found after download");
+
+    // Step 2: apply Spotify-style V-curve EQ via ffmpeg
+    // Sub-bass +3dB, Bass +2dB, Low-mid -1dB, Mid -1dB, High-mid +2dB, Treble +3dB
+    fs::path eqOut = tmpDir / ("eq_" + raw.filename().string());
+    std::string eqCmd =
+        "ffmpeg -y -i " + shellEscape(raw.string()) +
+        " -af \"equalizer=f=60:width_type=o:width=2:g=3,"
+               "equalizer=f=200:width_type=o:width=2:g=2,"
+               "equalizer=f=500:width_type=o:width=2:g=-1,"
+               "equalizer=f=1000:width_type=o:width=2:g=-1,"
+               "equalizer=f=4000:width_type=o:width=2:g=2,"
+               "equalizer=f=12000:width_type=o:width=2:g=3\" "
+        + shellEscape(eqOut.string()) + " 2>&1";
+
+    runCommand(eqCmd);
+
+    fs::remove(raw);
+    return eqOut;
 }
 
 // ─── Session store ────────────────────────────────────────────────────────────
