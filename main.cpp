@@ -72,7 +72,7 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
     std::string cmd =
         "yt-dlp --quiet --skip-download --flat-playlist "
         "--dump-json "
-        "--default-search ytmsearch" + std::to_string(MAX_RESULTS) + " "
+        "--default-search ytsearch" + std::to_string(MAX_RESULTS) + " "
         + shellEscape(query) + " 2>/dev/null";
 
     std::string raw;
