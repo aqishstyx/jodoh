@@ -148,7 +148,7 @@ struct SessionStore {
 // ─── sendMessage wrapper (new tgbot-cpp API) ──────────────────────────────────
 
 void sendMsg(const TgBot::Api& api, int64_t chatId, const std::string& text,
-             TgBot::GenericReply::Ptr keyboard = nullptr) {
+             TgBot::InlineKeyboardMarkup::Ptr keyboard = nullptr) {
     api.sendMessage(chatId, text,
         nullptr,    // linkPreviewOptions
         nullptr,    // replyParameters
@@ -159,8 +159,8 @@ void sendMsg(const TgBot::Api& api, int64_t chatId, const std::string& text,
 
 void editMsg(const TgBot::Api& api, int64_t chatId, int32_t msgId,
              const std::string& text,
-             TgBot::GenericReply::Ptr keyboard = nullptr) {
-    api.editMessageText(text, chatId, msgId, "", "Markdown", false, keyboard);
+             TgBot::InlineKeyboardMarkup::Ptr keyboard = nullptr) {
+    api.editMessageText(text, chatId, msgId, "", "Markdown", nullptr, keyboard);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -270,9 +270,11 @@ int main() {
                 std::string   bytes((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
 
-                // InputFile::make is the correct factory in newer tgbot-cpp
-                auto inputFile = TgBot::InputFile::make(
-                    bytes, "audio/mpeg", mp3.filename().string());
+                // Create InputFile using shared_ptr directly
+                auto inputFile = std::make_shared<TgBot::InputFile>();
+                inputFile->data     = bytes;
+                inputFile->mimeType = "audio/mpeg";
+                inputFile->fileName = mp3.filename().string();
 
                 bot.getApi().sendAudio(chatId, inputFile,
                     "🎵 " + video.title,
