@@ -4,11 +4,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -20,9 +20,9 @@ using json   = nlohmann::json;
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-static const int    MAX_RESULTS      = 5;
-static const int    MAX_DURATION_SEC = 600;   // 10 min cap
-static const std::string AUDIO_QUALITY = "192";
+static const int         MAX_RESULTS      = 5;
+static const int         MAX_DURATION_SEC = 600;
+static const std::string AUDIO_QUALITY    = "192";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,19 +38,17 @@ std::string fmtDuration(int seconds) {
     return buf;
 }
 
-// Run a shell command and capture its stdout.
 std::string runCommand(const std::string& cmd) {
     std::string result;
     FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) throw std::runtime_error("popen failed: " + cmd);
+    if (!pipe) throw std::runtime_error("popen failed");
     char buf[4096];
     while (fgets(buf, sizeof(buf), pipe)) result += buf;
     int rc = pclose(pipe);
-    if (rc != 0) throw std::runtime_error("Command failed (rc=" + std::to_string(rc) + "): " + cmd);
+    if (rc != 0) throw std::runtime_error("Command failed (rc=" + std::to_string(rc) + ")");
     return result;
 }
 
-// Shell-escape a single argument (wrap in single quotes, escape internal ones).
 std::string shellEscape(const std::string& s) {
     std::string out = "'";
     for (char c : s) {
@@ -66,12 +64,11 @@ struct VideoInfo {
     std::string id;
     std::string title;
     std::string url;
-    int         duration;   // seconds
+    int         duration;
     std::string durationFmt;
 };
 
 std::vector<VideoInfo> searchYouTube(const std::string& query) {
-    // yt-dlp can dump flat JSON for search results
     std::string cmd =
         "yt-dlp --quiet --skip-download --flat-playlist "
         "--dump-json "
@@ -79,20 +76,17 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
         + shellEscape(query) + " 2>/dev/null";
 
     std::string raw;
-    try { raw = runCommand(cmd); }
-    catch (...) { return {}; }
+    try { raw = runCommand(cmd); } catch (...) { return {}; }
 
     std::vector<VideoInfo> results;
     std::istringstream stream(raw);
     std::string line;
-
     while (std::getline(stream, line)) {
         if (line.empty()) continue;
         try {
-            auto j = json::parse(line);
-            int dur = j.value("duration", 0);
+            auto j   = json::parse(line);
+            int  dur = j.value("duration", 0);
             if (dur > MAX_DURATION_SEC) continue;
-
             VideoInfo v;
             v.id          = j.value("id", "");
             v.title       = j.value("title", "Unknown");
@@ -107,7 +101,6 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
 
 // ─── Download ─────────────────────────────────────────────────────────────────
 
-// Downloads audio to tmpDir, returns path to the resulting .mp3
 fs::path downloadMp3(const std::string& url, const fs::path& tmpDir) {
     std::string cmd =
         "yt-dlp --quiet "
@@ -118,33 +111,31 @@ fs::path downloadMp3(const std::string& url, const fs::path& tmpDir) {
         "--output " + shellEscape((tmpDir / "%(title)s.%(ext)s").string()) + " "
         + shellEscape(url) + " 2>&1";
 
-    runCommand(cmd);   // throws on non-zero exit
+    runCommand(cmd);
 
-    // Find the resulting mp3
-    for (auto& entry : fs::directory_iterator(tmpDir)) {
+    for (auto& entry : fs::directory_iterator(tmpDir))
         if (entry.path().extension() == ".mp3")
             return entry.path();
-    }
+
     throw std::runtime_error("MP3 not found after download");
 }
 
 // ─── Session store ────────────────────────────────────────────────────────────
-// Maps  userId  →  { videoId → VideoInfo }
 
 using ResultMap = std::map<std::string, VideoInfo>;
 
 struct SessionStore {
-    std::mutex                     mtx;
-    std::map<int64_t, ResultMap>   data;
+    std::mutex                   mtx;
+    std::map<int64_t, ResultMap> data;
 
-    void set(int64_t userId, const std::vector<VideoInfo>& videos) {
+    void store(int64_t userId, const std::vector<VideoInfo>& videos) {
         std::lock_guard<std::mutex> lock(mtx);
         ResultMap m;
         for (auto& v : videos) m[v.id] = v;
         data[userId] = std::move(m);
     }
 
-    std::optional<VideoInfo> get(int64_t userId, const std::string& videoId) {
+    std::optional<VideoInfo> fetch(int64_t userId, const std::string& videoId) {
         std::lock_guard<std::mutex> lock(mtx);
         auto it = data.find(userId);
         if (it == data.end()) return std::nullopt;
@@ -154,80 +145,95 @@ struct SessionStore {
     }
 };
 
+// ─── sendMessage wrapper (new tgbot-cpp API) ──────────────────────────────────
+
+void sendMsg(const TgBot::Api& api, int64_t chatId, const std::string& text,
+             TgBot::GenericReply::Ptr keyboard = nullptr) {
+    api.sendMessage(chatId, text,
+        nullptr,    // linkPreviewOptions
+        nullptr,    // replyParameters
+        keyboard,   // replyMarkup
+        "Markdown"  // parseMode
+    );
+}
+
+void editMsg(const TgBot::Api& api, int64_t chatId, int32_t msgId,
+             const std::string& text,
+             TgBot::GenericReply::Ptr keyboard = nullptr) {
+    api.editMessageText(text, chatId, msgId, "", "Markdown", false, keyboard);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
     std::string token = getEnv("TELEGRAM_BOT_TOKEN");
     if (token.empty()) {
-        std::cerr << "ERROR: TELEGRAM_BOT_TOKEN env var not set.\n";
+        std::cerr << "ERROR: TELEGRAM_BOT_TOKEN not set.\n";
         return 1;
     }
 
-    TgBot::Bot      bot(token);
-    SessionStore    sessions;
+    TgBot::Bot   bot(token);
+    SessionStore sessions;
 
     // /start
     bot.getEvents().onCommand("start", [&](TgBot::Message::Ptr msg) {
-        bot.getApi().sendMessage(msg->chat->id,
+        sendMsg(bot.getApi(), msg->chat->id,
             "🎵 *Music Bot*\n\n"
             "Type a song name or artist and I'll search YouTube.\n\n"
-            "Example: `Bohemian Rhapsody Queen`",
-            false, 0, nullptr, "Markdown");
+            "Example: `Bohemian Rhapsody Queen`");
     });
 
     // /help
     bot.getEvents().onCommand("help", [&](TgBot::Message::Ptr msg) {
-        bot.getApi().sendMessage(msg->chat->id,
+        sendMsg(bot.getApi(), msg->chat->id,
             "Send any text to search for music.\n"
             "Tap a result to download and receive the MP3. 🎧");
     });
 
-    // Any text → search
+    // Text → search
     bot.getEvents().onNonCommandMessage([&](TgBot::Message::Ptr msg) {
-        if (!msg->text || msg->text->empty()) return;
-        std::string query = *msg->text;
+        if (msg->text.empty()) return;
+        std::string query = msg->text;
 
-        // Send "searching" message
         auto statusMsg = bot.getApi().sendMessage(
             msg->chat->id,
             "🔍 Searching for *" + query + "*…",
-            false, 0, nullptr, "Markdown");
+            nullptr, nullptr, nullptr, "Markdown");
 
-        // Run search in a thread so we don't block the long-poll loop
-        std::thread([&bot, &sessions, query, msg, statusMsg]() {
+        int64_t chatId   = msg->chat->id;
+        int32_t statusId = statusMsg->messageId;
+        int64_t userId   = msg->from->id;
+
+        std::thread([&bot, &sessions, query, chatId, statusId, userId]() {
             auto results = searchYouTube(query);
 
             if (results.empty()) {
-                bot.getApi().editMessageText(
-                    "❌ No results found. Try a different search term.",
-                    msg->chat->id, statusMsg->messageId);
+                editMsg(bot.getApi(), chatId, statusId,
+                    "❌ No results found. Try a different search term.");
                 return;
             }
 
-            sessions.set(msg->from->id, results);
+            sessions.store(userId, results);
 
-            // Build inline keyboard
             auto keyboard = std::make_shared<TgBot::InlineKeyboardMarkup>();
             for (auto& v : results) {
                 std::string label = "🎵 ";
                 label += v.title.substr(0, 50);
                 label += "  [" + v.durationFmt + "]";
-
                 auto btn = std::make_shared<TgBot::InlineKeyboardButton>();
                 btn->text         = label;
                 btn->callbackData = "dl:" + v.id;
-                keyboard->inlineKeyboard.push_back({ btn });
+                keyboard->inlineKeyboard.push_back({btn});
             }
 
-            bot.getApi().editMessageText(
-                "Found *" + std::to_string(results.size()) + "* results for _" + query + "_.\n"
-                "Choose one to download 👇",
-                msg->chat->id, statusMsg->messageId,
-                "", "Markdown", false, keyboard);
+            editMsg(bot.getApi(), chatId, statusId,
+                "Found *" + std::to_string(results.size()) +
+                "* results for _" + query + "_.\nChoose one to download 👇",
+                keyboard);
         }).detach();
     });
 
-    // Callback query → download
+    // Callback → download
     bot.getEvents().onCallbackQuery([&](TgBot::CallbackQuery::Ptr query) {
         bot.getApi().answerCallbackQuery(query->id);
 
@@ -235,71 +241,60 @@ int main() {
         if (data.substr(0, 3) != "dl:") return;
         std::string videoId = data.substr(3);
 
-        int64_t     chatId  = query->message->chat->id;
-        int32_t     msgId   = query->message->messageId;
-        int64_t     userId  = query->from->id;
+        int64_t chatId = query->message->chat->id;
+        int32_t msgId  = query->message->messageId;
+        int64_t userId = query->from->id;
 
         std::thread([&bot, &sessions, videoId, chatId, msgId, userId]() {
-            auto videoOpt = sessions.get(userId, videoId);
+            auto videoOpt = sessions.fetch(userId, videoId);
             if (!videoOpt) {
-                bot.getApi().editMessageText(
-                    "⚠️ Session expired. Please search again.",
-                    chatId, msgId);
+                editMsg(bot.getApi(), chatId, msgId,
+                    "⚠️ Session expired. Please search again.");
                 return;
             }
             auto video = *videoOpt;
 
-            bot.getApi().editMessageText(
-                "⬇️ Downloading *" + video.title + "*…\nThis may take a moment.",
-                chatId, msgId, "", "Markdown");
+            editMsg(bot.getApi(), chatId, msgId,
+                "⬇️ Downloading *" + video.title + "*…\nThis may take a moment.");
 
-            // Create temp dir
             fs::path tmpDir = fs::temp_directory_path() / ("mbot_" + videoId);
             fs::create_directories(tmpDir);
 
             try {
                 fs::path mp3 = downloadMp3(video.url, tmpDir);
 
-                bot.getApi().editMessageText(
-                    "📤 Sending *" + video.title + "*…",
-                    chatId, msgId, "", "Markdown");
+                editMsg(bot.getApi(), chatId, msgId,
+                    "📤 Sending *" + video.title + "*…");
 
-                // Read file into memory
                 std::ifstream f(mp3, std::ios::binary);
                 std::string   bytes((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
 
-                auto inputFile = TgBot::InputFile::fromData(
+                // InputFile::make is the correct factory in newer tgbot-cpp
+                auto inputFile = TgBot::InputFile::make(
                     bytes, "audio/mpeg", mp3.filename().string());
 
                 bot.getApi().sendAudio(chatId, inputFile,
-                    "🎵 " + video.title,  // caption
-                    0,                    // duration
-                    "",                   // performer
-                    video.title);         // title
+                    "🎵 " + video.title,
+                    0, "", video.title);
 
                 bot.getApi().deleteMessage(chatId, msgId);
 
             } catch (std::exception& e) {
-                bot.getApi().editMessageText(
-                    std::string("❌ Download failed: ") + e.what(),
-                    chatId, msgId);
+                editMsg(bot.getApi(), chatId, msgId,
+                    std::string("❌ Download failed: ") + e.what());
             }
 
             fs::remove_all(tmpDir);
         }).detach();
     });
 
-    // Start long polling
-    std::cout << "Bot username: " << bot.getApi().getMe()->username << "\n";
+    std::cout << "Bot: @" << bot.getApi().getMe()->username << "\n";
     std::cout << "Polling…\n";
     TgBot::TgLongPoll longPoll(bot);
     while (true) {
         try { longPoll.start(); }
-        catch (TgBot::TgException& e) {
-            std::cerr << "TgBot error: " << e.what() << "\n";
-        } catch (std::exception& e) {
-            std::cerr << "Error: " << e.what() << "\n";
-        }
+        catch (TgBot::TgException& e) { std::cerr << "TgBot: " << e.what() << "\n"; }
+        catch (std::exception& e)     { std::cerr << "Error: " << e.what() << "\n"; }
     }
 }
