@@ -72,7 +72,7 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
     std::string cmd =
         "yt-dlp --quiet --skip-download --flat-playlist "
         "--dump-json "
-        "--default-search ytsearch" + std::to_string(MAX_RESULTS) + " "
+        "--default-search ytmsearch" + std::to_string(MAX_RESULTS) + " "
         + shellEscape(query) + " 2>/dev/null";
 
     std::string raw;
@@ -178,16 +178,13 @@ int main() {
     // /start
     bot.getEvents().onCommand("start", [&](TgBot::Message::Ptr msg) {
         sendMsg(bot.getApi(), msg->chat->id,
-            "🎵 *Music Bot*\n\n"
-            "Type a song name or artist and I'll search YouTube.\n\n"
-            "Example: `Bohemian Rhapsody Queen`");
+            "🎵 *JukeBox Bot* — Search a track to play");
     });
 
     // /help
     bot.getEvents().onCommand("help", [&](TgBot::Message::Ptr msg) {
         sendMsg(bot.getApi(), msg->chat->id,
-            "Send any text to search for music.\n"
-            "Tap a result to download and receive the MP3. 🎧");
+            "🚨 Search any music by title or artist.");
     });
 
     // Text → search
@@ -197,7 +194,7 @@ int main() {
 
         auto statusMsg = bot.getApi().sendMessage(
             msg->chat->id,
-            "🔍 Searching for *" + query + "*…",
+            "✨🔍 Searching for *" + query + "*…",
             nullptr, nullptr, nullptr, "Markdown");
 
         int64_t chatId   = msg->chat->id;
@@ -227,8 +224,8 @@ int main() {
             }
 
             editMsg(bot.getApi(), chatId, statusId,
-                "Found *" + std::to_string(results.size()) +
-                "* results for _" + query + "_.\nChoose one to download 👇",
+                "✅ Found *" + std::to_string(results.size()) +
+                "* results for _" + query + "_.",
                 keyboard);
         }).detach();
     });
