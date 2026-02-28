@@ -69,11 +69,10 @@ struct VideoInfo {
 };
 
 std::vector<VideoInfo> searchYouTube(const std::string& query) {
-    // ytmsearch = YouTube Music search — returns proper music tracks only
     std::string cmd =
         "yt-dlp --quiet --skip-download --flat-playlist "
         "--dump-json "
-        "--default-search ytmsearch" + std::to_string(MAX_RESULTS) + " "
+        "--default-search ytsearch" + std::to_string(MAX_RESULTS) + " "
         + shellEscape(query) + " 2>/dev/null";
 
     std::string raw;
@@ -85,26 +84,8 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
     while (std::getline(stream, line)) {
         if (line.empty()) continue;
         try {
-            auto j = json::parse(line);
-
-            // YouTube Music may wrap results in entries array
-            if (j.contains("entries") && j["entries"].is_array()) {
-                for (auto& e : j["entries"]) {
-                    int dur = e.value("duration", 0);
-                    if (dur > MAX_DURATION_SEC) continue;
-                    VideoInfo v;
-                    v.id          = e.value("id", "");
-                    v.title       = e.value("title", "Unknown");
-                    v.duration    = dur;
-                    v.durationFmt = fmtDuration(dur);
-                    v.url         = "https://www.youtube.com/watch?v=" + v.id;
-                    if (!v.id.empty()) results.push_back(v);
-                }
-                continue;
-            }
-
-            // flat single entry
-            int dur = j.value("duration", 0);
+            auto j   = json::parse(line);
+            int  dur = j.value("duration", 0);
             if (dur > MAX_DURATION_SEC) continue;
             VideoInfo v;
             v.id          = j.value("id", "");
@@ -113,7 +94,6 @@ std::vector<VideoInfo> searchYouTube(const std::string& query) {
             v.durationFmt = fmtDuration(dur);
             v.url         = "https://www.youtube.com/watch?v=" + v.id;
             if (!v.id.empty()) results.push_back(v);
-
         } catch (...) { continue; }
     }
     return results;
